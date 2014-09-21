@@ -658,14 +658,78 @@ rpcs::dispatch(djob_t *j)
 //   INPROGRESS: seen this xid, and still processing it.
 //   DONE: seen this xid, previous reply returned in *b and *sz.
 //   FORGOTTEN: might have seen this xid, but deleted previous reply.
-rpcs::rpcstate_t 
-rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
-		unsigned int xid_rep, char **b, int *sz)
-{
+rpcs::rpcstate_t rpcs::checkduplicate_and_update(unsigned int clt_nonce,
+		unsigned int xid, unsigned int xid_rep, char **b, int *sz) {
 	ScopedLock rwl(&reply_window_m_);
 
-        // You fill this in for Lab 1.
-	return NEW;
+	if (xid_rep > client_receved_max_xid_[clt_nonce])
+		client_receved_max_xid_[clt_nonce] = xid_rep;
+
+	unsigned int rep_xid_max = client_receved_max_xid_[clt_nonce];
+
+	rpcs::rpcstate_t return_value;
+
+	// if the xid is smaller than the oldest req id in the reaply_window
+	//then we have seen it before and forgot about it
+	if (xid < rep_xid_max) {
+		return_value = FORGOTTEN;
+	} else {
+		//the request is a either in_progress or completed
+		bool req_exist = false;
+		std::list<rpcs::reply_t>::iterator it;
+		for (it = reply_window_.find(clt_nonce)->second.begin();
+				it != reply_window_.find(clt_nonce)->second.end(); it++) {
+			if (it->xid == xid) {
+				req_exist = true;
+				//if the request has been completed
+				if (it->cb_present) {
+					*b = it->buf;
+					*sz = it->sz;
+					return_value = DONE;
+				}
+				//this is an in_progress req
+				else {
+					return_value = INPROGRESS;
+				}
+				break;
+			}
+		}
+		//this is a new request
+		if (req_exist == false) {
+			bool pushback = true;
+			rpcs::reply_t repl(xid);
+			std::list<rpcs::reply_t>::iterator it1;
+			for (it1 = reply_window_.find(clt_nonce)->second.begin();
+					it1 != reply_window_.find(clt_nonce)->second.end(); it1++) {
+				if (it1->xid > xid) {
+
+					reply_window_.find(clt_nonce)->second.insert(it1,repl);
+					pushback = false;
+					break;
+				}
+			}
+			if (pushback) {
+				rpcs::reply_t repl = rpcs::reply_t(xid);
+				reply_window_.find(clt_nonce)->second.push_back(repl);
+			}
+			return_value = NEW;
+		}
+	}
+	//delete requests with xid<=xid_rep
+	std::list<rpcs::reply_t>::iterator itt;
+	for (itt = reply_window_.find(clt_nonce)->second.begin();
+			itt != reply_window_.find(clt_nonce)->second.end();) {
+		if (itt->xid <= rep_xid_max) {
+			free((*itt).buf);
+			std::list<rpcs::reply_t>::iterator temp = itt;
+			++itt;
+			reply_window_.find(clt_nonce)->second.erase(temp);
+		}
+		else{
+			++itt;
+		}
+	}
+	return return_value;
 }
 
 // rpcs::dispatch calls add_reply when it is sending a reply to an RPC,
@@ -673,12 +737,21 @@ rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
 // add_reply() should remember b and sz.
 // free_reply_window() and checkduplicate_and_update is responsible for 
 // calling free(b).
-void
-rpcs::add_reply(unsigned int clt_nonce, unsigned int xid,
-		char *b, int sz)
-{
+void rpcs::add_reply(unsigned int clt_nonce, unsigned int xid, char *b,
+		int sz) {
 	ScopedLock rwl(&reply_window_m_);
-        // You fill this in for Lab 1.
+
+	// You fill this in for Lab 1.
+	std::list<rpcs::reply_t>::iterator it;
+	for (it = reply_window_.find(clt_nonce)->second.begin();
+			it != reply_window_.find(clt_nonce)->second.end(); it++) {
+		if (it->xid == xid) {
+			it->buf = b;
+			it->sz = sz;
+			it->cb_present = true;
+			break;
+		}
+	}
 }
 
 void
